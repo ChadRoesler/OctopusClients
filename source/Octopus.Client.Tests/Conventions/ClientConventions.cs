@@ -57,7 +57,7 @@ namespace Octopus.Client.Tests.Conventions
             var missingTypes = AsyncRepositoryInterfaceTypes.Except(exposedTypes).ToArray();
             if (missingTypes.Any())
             {
-                Assert.Fail($"All async repository types should be exposed by {nameof(IOctopusAsyncRepository)}. Missing: {missingTypes.Select(t => t.Name)}");
+                Assert.Fail($"All async repository types should be exposed by {nameof(IOctopusAsyncRepository)}. Missing: {string.Join(", ", missingTypes.Select(t => t.Name))}");
             }
         }
 
@@ -93,7 +93,7 @@ namespace Octopus.Client.Tests.Conventions
             var missingTypes = SyncRepositoryInterfaceTypes.Except(exposedTypes).ToArray();
             if (missingTypes.Any())
             {
-                Assert.Fail($"All sync *Repository types should be exposed by {nameof(IOctopusRepository)}. Missing: {missingTypes.Select(t => t.Name)}");
+                Assert.Fail($"All sync *Repository types should be exposed by {nameof(IOctopusRepository)}. Missing: {string.Join(", ", missingTypes.Select(t => t.Name))}");
             }
         }
 #endif
@@ -388,7 +388,7 @@ namespace Octopus.Client.Tests.Conventions
         public void AllResourcePropertiesShouldHavePublicSetters()
         {
             ResourceTypes
-                .Except(new[] { typeof(LifecycleResource), typeof(DeploymentProcessResource) })
+                .Except(new[] { typeof(LifecycleResource), typeof(DeploymentProcessResource), typeof(CertificateResource) })
                 .MustConformTo(Convention.PropertiesMustHavePublicSetters)
                 .WithFailureAssertion(Assert.Fail);
         }

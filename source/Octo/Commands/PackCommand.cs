@@ -24,6 +24,7 @@ namespace Octopus.Cli.Commands
         string id;
         string outFolder;
         bool overwrite;
+        bool verbose;
         string releaseNotes, releaseNotesFile;
         string title;
         SemanticVersion version;
@@ -48,10 +49,11 @@ namespace Octopus.Cli.Commands
             
             var basic = optionGroups.For("Basic options");
             basic.Add("id=", "The ID of the package; e.g. MyCompany.MyApp", v => id = v);
-            basic.Add("format=", "Package format. Options are: NuPkg, Zip. Defaults to NuPkg, though we recommend Zip going forward.", fmt => packageBuilder = SelectFormat(fmt));
+            basic.Add("format=", "Package format. Options are: NuPkg, Zip. Defaults to NuPkg, though we recommend Zip going forward", fmt => packageBuilder = SelectFormat(fmt));
             basic.Add("version=", "[Optional] The version of the package; must be a valid SemVer; defaults to a timestamp-based version", v => version = string.IsNullOrWhiteSpace(v) ? null : new SemanticVersion(v));
-            basic.Add("outFolder=", "[Optional] The folder into which the generated NUPKG file will be written; defaults to '.'", v => outFolder = v);
-            basic.Add("basePath=", "[Optional] The root folder containing files and folders to pack; defaults to '.'", v => basePath = v);
+            basic.Add("outFolder=", "[Optional] The folder into which the generated NUPKG file will be written; defaults to '.'", v => { v.CheckForIllegalPathCharacters(nameof(outFolder)); outFolder = v;});
+            basic.Add("basePath=", "[Optional] The root folder containing files and folders to pack; defaults to '.'", v => { v.CheckForIllegalPathCharacters(nameof(basePath)); basePath = v;});
+            basic.Add("verbose", "[Optional] verbose output", v => verbose = true);
 
             packageBuilder = SelectFormat("nupkg");
         }
@@ -82,7 +84,7 @@ namespace Octopus.Cli.Commands
                 if (version == null)
                 {
                     var now = DateTime.Now;
-                    version = new SemanticVersion(now.Year, now.Month, now.Day, now.Hour*10000 + now.Minute*100 + now.Second);
+                    version = SemanticVersion.Parse($"{now.Year}.{now.Month}.{now.Day}.{now.Hour*10000 + now.Minute*100 + now.Second}");
                 }
 
                 if (authors.All(string.IsNullOrWhiteSpace))
@@ -108,6 +110,11 @@ namespace Octopus.Cli.Commands
                         allReleaseNotes = releaseNotes;
                 }
 
+                if (string.IsNullOrWhiteSpace(version.OriginalString))
+                {
+                    throw new Exception("Somehow we created a SemanticVersion without the OriginalString value being preserved. We want to use the OriginalString so we can preserve the version as intended by the caller.");
+                }
+
                 var metadata = new ManifestMetadata
                 {
                     Id = id,
@@ -122,9 +129,12 @@ namespace Octopus.Cli.Commands
                 if (!string.IsNullOrWhiteSpace(title))
                     metadata.Title = title;
 
-                log.Information("Packing {PackageId:l} version {Version}...", id, version);
+                
+                if (verbose)
+                    log.Information("Verbose logging");
+                log.Information("Packing {id:l} version {Version}...", id, version);
 
-                packageBuilder.BuildPackage(basePath, includes, metadata, outFolder, overwrite);
+                packageBuilder.BuildPackage(basePath, includes, metadata, outFolder, overwrite, verbose);
 
                 log.Information("Done.");
             });

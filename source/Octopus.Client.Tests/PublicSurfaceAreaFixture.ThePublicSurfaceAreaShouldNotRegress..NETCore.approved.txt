@@ -14,6 +14,7 @@ Octopus.Client
   interface IOctopusAsyncClient
     IDisposable
   {
+    event Action<HttpResponseMessage> AfterReceivedHttpResponse
     event Action<HttpRequestMessage> BeforeSendingHttpRequest
     event Action<OctopusResponse> ReceivedOctopusResponse
     event Action<OctopusRequest> SendingOctopusRequest
@@ -22,8 +23,9 @@ Octopus.Client
     Task<TResource> Create(String, Octopus.Client.TResource, Object)
     Task Delete(String, Object)
     Task<TResource> Get(String, Object)
-    Task<Stream> GetContent(String)
+    Task<Stream> GetContent(String, Object)
     Task<ResourceCollection<TResource>> List(String, Object)
+    Task<IReadOnlyList<TResource>> ListAll(String, Object)
     Task Paginate(String, Func<ResourceCollection<TResource>, Boolean>)
     Task Paginate(String, Object, Func<ResourceCollection<TResource>, Boolean>)
     Task Post(String, Octopus.Client.TResource, Object)
@@ -43,6 +45,7 @@ Octopus.Client
     Octopus.Client.Repositories.Async.IArtifactRepository Artifacts { get; }
     Octopus.Client.Repositories.Async.IBackupRepository Backups { get; }
     Octopus.Client.Repositories.Async.IBuiltInPackageRepositoryRepository BuiltInPackageRepository { get; }
+    Octopus.Client.Repositories.Async.ICertificateConfigurationRepository CertificateConfiguration { get; }
     Octopus.Client.Repositories.Async.ICertificateRepository Certificates { get; }
     Octopus.Client.Repositories.Async.IChannelRepository Channels { get; }
     Octopus.Client.IOctopusAsyncClient Client { get; }
@@ -88,6 +91,7 @@ Octopus.Client
     Octopus.Client.IOctopusAsyncClient
     IDisposable
   {
+    event Action<HttpResponseMessage> AfterReceivedHttpResponse
     event Action<HttpRequestMessage> BeforeSendingHttpRequest
     event Action<OctopusResponse> ReceivedOctopusResponse
     event Action<OctopusRequest> SendingOctopusRequest
@@ -98,8 +102,9 @@ Octopus.Client
     Task Delete(String, Object)
     void Dispose()
     Task<TResource> Get(String, Object)
-    Task<Stream> GetContent(String)
+    Task<Stream> GetContent(String, Object)
     Task<ResourceCollection<TResource>> List(String, Object)
+    Task<IReadOnlyList<TResource>> ListAll(String, Object)
     Task Paginate(String, Object, Func<ResourceCollection<TResource>, Boolean>)
     Task Paginate(String, Func<ResourceCollection<TResource>, Boolean>)
     Task Post(String, Octopus.Client.TResource, Object)
@@ -121,6 +126,7 @@ Octopus.Client
     Octopus.Client.Repositories.Async.IArtifactRepository Artifacts { get; }
     Octopus.Client.Repositories.Async.IBackupRepository Backups { get; }
     Octopus.Client.Repositories.Async.IBuiltInPackageRepositoryRepository BuiltInPackageRepository { get; }
+    Octopus.Client.Repositories.Async.ICertificateConfigurationRepository CertificateConfiguration { get; }
     Octopus.Client.Repositories.Async.ICertificateRepository Certificates { get; }
     Octopus.Client.Repositories.Async.IChannelRepository Channels { get; }
     Octopus.Client.IOctopusAsyncClient Client { get; }
@@ -167,6 +173,11 @@ Octopus.Client
   class OctopusClientOptions
   {
     .ctor()
+    Boolean IgnoreSslErrors { get; set; }
+    String Proxy { get; set; }
+    String ProxyPassword { get; set; }
+    String ProxyUsername { get; set; }
+    SslProtocols SslProtocols { get; set; }
     TimeSpan Timeout { get; set; }
   }
   abstract class OctopusRepositoryExtensions
@@ -455,6 +466,7 @@ Octopus.Client.Exceptions
   class OctopusErrorsContract
   {
     .ctor()
+    Object Details { get; set; }
     String ErrorMessage { get; set; }
     String[] Errors { get; set; }
     String FullException { get; set; }
@@ -472,6 +484,7 @@ Octopus.Client.Exceptions
     class OctopusErrorsContract
     {
       .ctor()
+      Object Details { get; set; }
       String ErrorMessage { get; set; }
       String[] Errors { get; set; }
       String FullException { get; set; }
@@ -503,8 +516,11 @@ Octopus.Client.Exceptions
   {
     .ctor(String, ICollection<String>)
     .ctor(Int32, String, ICollection<String>)
+    .ctor(Int32, String, ICollection<String>, Object)
+    Object Details { get; }
     String ErrorMessage { get; }
     ReadOnlyCollection<String> Errors { get; }
+    Octopus.Client.Exceptions.TDetails DetailsAs()
   }
   class UnsupportedApiVersionException
     _Exception
@@ -565,10 +581,20 @@ Octopus.Client.Logging
 }
 Octopus.Client.Model
 {
+  class ActionsUpdateResource
+    Octopus.Client.Model.IResource
+  {
+    .ctor()
+    IDictionary<String, String[]> ActionIdsByProcessId { get; set; }
+    IDictionary<String, PropertyValueResource> DefaultPropertyValues { get; set; }
+    String Id { get; set; }
+    Octopus.Client.Model.LinkCollection Links { get; set; }
+    Int32 Version { get; set; }
+  }
   class ActionTemplateParameterResource
   {
     .ctor()
-    String DefaultValue { get; set; }
+    Octopus.Client.Model.PropertyValueResource DefaultValue { get; set; }
     IDictionary<String, String> DisplaySettings { get; set; }
     String HelpText { get; set; }
     String Id { get; set; }
@@ -620,6 +646,22 @@ Octopus.Client.Model
     String StepId { get; set; }
     String StepName { get; set; }
     String Version { get; set; }
+  }
+  ActionUpdateOutcome
+  {
+      Success = 0
+      ManualMergeRequired = 1
+      DefaultParamterValueMissing = 2
+  }
+  class ActionUpdateResultResource
+    Octopus.Client.Model.IResource
+  {
+    .ctor()
+    String Id { get; set; }
+    Octopus.Client.Model.LinkCollection Links { get; set; }
+    IDictionary<String, String[]> ManualMergeRequiredReasonsByPropertyName { get; set; }
+    String[] NamesOfNewParametersMissingDefaultValue { get; set; }
+    Octopus.Client.Model.ActionUpdateOutcome Outcome { get; set; }
   }
   class ActivityElement
   {
@@ -686,8 +728,12 @@ Octopus.Client.Model
   }
   class ApiConstants
   {
+    static System.String AntiforgeryTokenCookiePrefix
+    static System.String AntiforgeryTokenHttpHeaderName
     static System.String ApiKeyHttpHeaderName
+    static System.String AuthenticationCookiePrefix
     static System.Int32 DefaultClientRequestTimeout
+    static System.String OctopusUserAgentProductName
     static System.String SupportedApiSchemaVersionMax
     static System.String SupportedApiSchemaVersionMin
     .ctor()
@@ -931,7 +977,7 @@ Octopus.Client.Model
       UpdateOnNewMachine = 1
       UpdateAlways = 2
   }
-  class CertificateResource
+  class CertificateConfigurationResource
     Octopus.Client.Model.IResource
     Octopus.Client.Model.IAuditedResource
     Octopus.Client.Model.INamedResource
@@ -939,6 +985,45 @@ Octopus.Client.Model
     .ctor()
     String Name { get; set; }
     String Thumbprint { get; set; }
+  }
+  CertificateFormat
+  {
+      Pkcs12 = 0
+      Der = 1
+      Pem = 2
+  }
+  class CertificateResource
+    Octopus.Client.Model.IResource
+    Octopus.Client.Model.IAuditedResource
+    Octopus.Client.Model.INamedResource
+  {
+    .ctor(String, String)
+    .ctor(String, String, String)
+    Nullable<DateTimeOffset> Archived { get; }
+    Octopus.Client.Model.SensitiveValue CertificateData { get; set; }
+    Octopus.Client.Model.CertificateFormat CertificateDataFormat { get; }
+    Octopus.Client.Model.ReferenceCollection EnvironmentIds { get; set; }
+    Boolean HasPrivateKey { get; }
+    Boolean IsExpired { get; }
+    String IssuerCommonName { get; }
+    String IssuerDistinguishedName { get; }
+    String IssuerOrganization { get; }
+    String Name { get; set; }
+    DateTimeOffset NotAfter { get; }
+    DateTimeOffset NotBefore { get; }
+    String Notes { get; set; }
+    Octopus.Client.Model.SensitiveValue Password { get; set; }
+    String ReplacedBy { get; }
+    Boolean SelfSigned { get; }
+    String SerialNumber { get; }
+    String SignatureAlgorithmName { get; }
+    String SubjectCommonName { get; }
+    String SubjectDistinguishedName { get; }
+    String SubjectOrganization { get; }
+    Octopus.Client.Model.ReferenceCollection TenantIds { get; set; }
+    Octopus.Client.Model.ReferenceCollection TenantTags { get; set; }
+    String Thumbprint { get; }
+    Int32 Version { get; }
   }
   class ChannelResource
     Octopus.Client.Model.IResource
@@ -1143,6 +1228,7 @@ Octopus.Client.Model
     String ActionType { get; set; }
     Octopus.Client.Model.ReferenceCollection Channels { get; }
     Octopus.Client.Model.ReferenceCollection Environments { get; }
+    Octopus.Client.Model.ReferenceCollection ExcludedEnvironments { get; }
     Boolean IsDisabled { get; set; }
     String Name { get; set; }
     IDictionary<String, PropertyValueResource> Properties { get; }
@@ -1205,13 +1291,16 @@ Octopus.Client.Model
     DateTimeOffset Created { get; set; }
     String DeploymentProcessId { get; set; }
     String EnvironmentId { get; set; }
+    Octopus.Client.Model.ReferenceCollection ExcludedMachineIds { get; set; }
     Boolean ForcePackageDownload { get; set; }
     Boolean ForcePackageRedeployment { get; set; }
     Dictionary<String, String> FormValues { get; set; }
+    Boolean IsFirst { get; set; }
     String ManifestVariableSetId { get; set; }
     String Name { get; set; }
     String ProjectId { get; set; }
     Nullable<DateTimeOffset> QueueTime { get; set; }
+    Nullable<DateTimeOffset> QueueTimeExpiry { get; set; }
     String ReleaseId { get; set; }
     Octopus.Client.Model.ReferenceCollection SkipActions { get; set; }
     Octopus.Client.Model.ReferenceCollection SpecificMachineIds { get; set; }
@@ -1224,6 +1313,7 @@ Octopus.Client.Model
       Success = 0
       Failure = 1
       Always = 2
+      Variable = 3
   }
   class DeploymentStepProperties
   {
@@ -1345,10 +1435,13 @@ Octopus.Client.Model
   {
     .ctor()
     Nullable<DateTimeOffset> EmailDigestLastProcessed { get; set; }
+    Nullable<Int64> EmailDigestLastProcessedEventAutoId { get; set; }
     TimeSpan EmailFrequencyPeriod { get; set; }
+    String EmailShowDatesInTimeZoneId { get; set; }
     Octopus.Client.Model.ReferenceCollection EmailTeams { get; set; }
     Octopus.Client.Model.EventNotificationSubscriptionFilter Filter { get; set; }
     Nullable<DateTimeOffset> WebhookLastProcessed { get; set; }
+    Nullable<Int64> WebhookLastProcessedEventAutoId { get; set; }
     Octopus.Client.Model.ReferenceCollection WebhookTeams { get; set; }
     String WebhookURI { get; set; }
   }
@@ -1406,6 +1499,7 @@ Octopus.Client.Model
     Octopus.Client.Model.IAuditedResource
   {
     .ctor()
+    Boolean IsBrowserCachingEnabled { get; set; }
     Boolean IsCommunityActionTemplatesEnabled { get; set; }
     Boolean IsDockerEnabled { get; set; }
     Boolean IsMultiTenancyEnabled { get; set; }
@@ -1749,6 +1843,7 @@ Octopus.Client.Model
   {
     .ctor()
     Octopus.Client.Model.CalamariUpdateBehavior CalamariUpdateBehavior { get; set; }
+    String TentacleUpdateAccountId { get; set; }
     Octopus.Client.Model.TentacleUpdateBehavior TentacleUpdateBehavior { get; set; }
   }
   class MaintenanceConfigurationResource
@@ -1839,6 +1934,7 @@ Octopus.Client.Model
     Octopus.Client.Model.IAuditedResource
   {
     .ctor()
+    String Hash { get; set; }
     Nullable<Int64> PackageSizeBytes { get; set; }
   }
   class PackageResource
@@ -1953,6 +2049,15 @@ Octopus.Client.Model
       SubscriptionView = 90
       SubscriptionEdit = 91
       SubscriptionDelete = 92
+      TriggerCreate = 93
+      TriggerView = 94
+      TriggerEdit = 95
+      TriggerDelete = 96
+      CertificateView = 97
+      CertificateCreate = 98
+      CertificateEdit = 99
+      CertificateDelete = 100
+      CertificateExportPrivateKey = 101
   }
   class PermissionDescription
   {
@@ -2028,6 +2133,7 @@ Octopus.Client.Model
   class ProjectConnectivityPolicy
   {
     .ctor()
+    Boolean AllowDeploymentsToNoTargets { get; set; }
     Octopus.Client.Model.SkipMachineBehavior SkipMachineBehavior { get; set; }
     Octopus.Client.Model.ReferenceCollection TargetRoles { get; set; }
   }
@@ -2056,6 +2162,7 @@ Octopus.Client.Model
     Boolean DefaultToSkipIfAlreadyInstalled { get; set; }
     String DeploymentProcessId { get; set; }
     String Description { get; set; }
+    Boolean DiscreteChannelRelease { get; set; }
     List<String> IncludedLibraryVariableSetIds { get; set; }
     Boolean IsDisabled { get; set; }
     String LifecycleId { get; set; }
@@ -2301,6 +2408,7 @@ Octopus.Client.Model
     String Application { get; set; }
     Boolean FormsLoginEnabled { get; set; }
     Boolean GuestLoginEnabled { get; set; }
+    Guid InstallationId { get; set; }
     Boolean IsEarlyAccessProgram { get; set; }
     String Version { get; set; }
   }
@@ -2596,6 +2704,7 @@ Octopus.Client.Model
     Octopus.Client.Model.IAuditedResource
   {
     .ctor()
+    Octopus.Client.Model.ActivityElement ActivityLog { get; set; }
     IList<ActivityElement> ActivityLogs { get; set; }
     Octopus.Client.Model.TaskProgress Progress { get; set; }
     Octopus.Client.Model.TaskResource Task { get; set; }
@@ -2626,6 +2735,7 @@ Octopus.Client.Model
     Nullable<DateTimeOffset> LastUpdatedTime { get; set; }
     String Name { get; set; }
     DateTimeOffset QueueTime { get; set; }
+    Nullable<DateTimeOffset> QueueTimeExpiry { get; set; }
     String ServerNode { get; set; }
     Nullable<DateTimeOffset> StartTime { get; set; }
     Octopus.Client.Model.TaskState State { get; set; }
@@ -2654,6 +2764,7 @@ Octopus.Client.Model
     Octopus.Client.Model.NamedReferenceItemCollection ExternalSecurityGroups { get; set; }
     Octopus.Client.Model.ReferenceCollection MemberUserIds { get; set; }
     String Name { get; set; }
+    Octopus.Client.Model.ReferenceCollection ProjectGroupIds { get; set; }
     Octopus.Client.Model.ReferenceCollection ProjectIds { get; set; }
     Octopus.Client.Model.ReferenceCollection TenantIds { get; set; }
     Octopus.Client.Model.ReferenceCollection TenantTags { get; set; }
@@ -2768,6 +2879,7 @@ Octopus.Client.Model
   {
     .ctor()
     Octopus.Client.Model.ReferenceCollection RestrictedToEnvironmentIds { get; set; }
+    Octopus.Client.Model.ReferenceCollection RestrictedToProjectGroupIds { get; set; }
     Octopus.Client.Model.ReferenceCollection RestrictedToProjectIds { get; set; }
     Octopus.Client.Model.ReferenceCollection RestrictedToTenantIds { get; set; }
     static IEqualityComparer<UserPermissionRestriction> UserPermissionRestrictionComparer { get; }
@@ -2831,6 +2943,7 @@ Octopus.Client.Model
     String Name { get; set; }
     Octopus.Client.Model.VariablePromptOptions Prompt { get; set; }
     Octopus.Client.Model.ScopeSpecification Scope { get; set; }
+    Octopus.Client.Model.VariableType Type { get; set; }
     String Value { get; set; }
   }
   class VariableScopeValues
@@ -2878,6 +2991,12 @@ Octopus.Client.Model
     Octopus.Client.Model.TContainer AddOrUpdateVariableTemplate(String, String, IDictionary<String, String>, String, String)
     Octopus.Client.Model.TContainer Clear()
   }
+  VariableType
+  {
+      String = 0
+      Sensitive = 1
+      Certificate = 2
+  }
   class VersioningStrategyResource
   {
     .ctor()
@@ -2924,8 +3043,11 @@ Octopus.Client.Model.Accounts
   {
     .ctor()
     Octopus.Client.Model.Accounts.AccountType AccountType { get; }
+    String ActiveDirectoryEndpointBaseUri { get; set; }
+    String AzureEnvironment { get; set; }
     String ClientId { get; set; }
     Octopus.Client.Model.SensitiveValue Password { get; set; }
+    String ResourceManagementEndpointBaseUri { get; set; }
     String SubscriptionNumber { get; set; }
     String TenantId { get; set; }
   }
@@ -2936,9 +3058,10 @@ Octopus.Client.Model.Accounts
   {
     .ctor()
     Octopus.Client.Model.Accounts.AccountType AccountType { get; }
+    String AzureEnvironment { get; set; }
     Octopus.Client.Model.SensitiveValue CertificateBytes { get; set; }
     String CertificateThumbprint { get; set; }
-    String ManagementEndpoint { get; set; }
+    String ServiceManagementEndpointBaseUri { get; set; }
     String SubscriptionNumber { get; set; }
   }
   class SshKeyPairAccountResource
@@ -3359,7 +3482,9 @@ Octopus.Client.Repositories.Async
     Octopus.Client.Repositories.Async.IPaginate<ActionTemplateResource>
     Octopus.Client.Repositories.Async.IGetAll<ActionTemplateResource>
   {
+    Task<ActionTemplateResource> GetVersion(Octopus.Client.Model.ActionTemplateResource, Int32)
     Task<List<ActionTemplateSearchResource>> Search()
+    Task<ActionUpdateResultResource[]> UpdateActions(Octopus.Client.Model.ActionTemplateResource, Octopus.Client.Model.ActionsUpdateResource)
   }
   interface IArtifactRepository
     Octopus.Client.Repositories.Async.IPaginate<ArtifactResource>
@@ -3384,12 +3509,26 @@ Octopus.Client.Repositories.Async
     Task<ResourceCollection<PackageFromBuiltInFeedResource>> ListPackages(String, Int32, Int32)
     Task<PackageFromBuiltInFeedResource> PushPackage(String, Stream, Boolean)
   }
+  interface ICertificateConfigurationRepository
+    Octopus.Client.Repositories.Async.IGet<CertificateConfigurationResource>
+    Octopus.Client.Repositories.Async.IFindByName<CertificateConfigurationResource>
+    Octopus.Client.Repositories.Async.IPaginate<CertificateConfigurationResource>
+  {
+    Task<CertificateConfigurationResource> GetOctopusCertificate()
+  }
   interface ICertificateRepository
     Octopus.Client.Repositories.Async.IGet<CertificateResource>
     Octopus.Client.Repositories.Async.IFindByName<CertificateResource>
     Octopus.Client.Repositories.Async.IPaginate<CertificateResource>
+    Octopus.Client.Repositories.Async.ICreate<CertificateResource>
+    Octopus.Client.Repositories.Async.IModify<CertificateResource>
+    Octopus.Client.Repositories.Async.IDelete<CertificateResource>
   {
-    Task<CertificateResource> GetOctopusCertificate()
+    Task Archive(Octopus.Client.Model.CertificateResource)
+    Task<Stream> Export(Octopus.Client.Model.CertificateResource, Nullable<CertificateFormat>, String, Boolean)
+    Task<CertificateConfigurationResource> GetOctopusCertificate()
+    Task<CertificateResource> Replace(Octopus.Client.Model.CertificateResource, String, String)
+    Task UnArchive(Octopus.Client.Model.CertificateResource)
   }
   interface IChannelRepository
     Octopus.Client.Repositories.Async.ICreate<ChannelResource>
@@ -3447,6 +3586,7 @@ Octopus.Client.Repositories.Async
     Task<ResourceCollection<DeploymentResource>> FindAll(String[], String[], Int32)
     Task<TaskResource> GetTask(Octopus.Client.Model.DeploymentResource)
     Task Paginate(String[], String[], Func<ResourceCollection<DeploymentResource>, Boolean>)
+    Task Paginate(String[], String[], String[], Func<ResourceCollection<DeploymentResource>, Boolean>)
   }
   interface IEnvironmentRepository
     Octopus.Client.Repositories.Async.IFindByName<EnvironmentResource>
@@ -3466,7 +3606,7 @@ Octopus.Client.Repositories.Async
     Octopus.Client.Repositories.Async.IGet<EventResource>
   {
     Task<ResourceCollection<EventResource>> List(Int32, String, String, Boolean)
-    Task<ResourceCollection<EventResource>> List(Int32, String, String, String, String, Boolean, String, String, String, String, String, String, String, String)
+    Task<ResourceCollection<EventResource>> List(Int32, String, String, String, String, Boolean, String, String, String, String, String, String, String, String, Nullable<Int64>, Nullable<Int64>)
   }
   interface IFeaturesConfigurationRepository
   {
@@ -3551,6 +3691,7 @@ Octopus.Client.Repositories.Async
     Task<MachineResource> Discover(String, Int32, Nullable<DiscoverableEndpointType>)
     Task<List<MachineResource>> FindByThumbprint(String)
     Task<MachineConnectionStatus> GetConnectionStatus(Octopus.Client.Model.MachineResource)
+    Task<IReadOnlyList<TaskResource>> GetTasks(Octopus.Client.Model.MachineResource)
   }
   interface IMachineRoleRepository
   {
@@ -3599,6 +3740,7 @@ Octopus.Client.Repositories.Async
   {
     Task<ProjectEditor> CreateOrModify(String, Octopus.Client.Model.ProjectGroupResource, Octopus.Client.Model.LifecycleResource)
     Task<ProjectEditor> CreateOrModify(String, Octopus.Client.Model.ProjectGroupResource, Octopus.Client.Model.LifecycleResource, String)
+    Task<IReadOnlyList<ReleaseResource>> GetAllReleases(Octopus.Client.Model.ProjectResource)
     Task<ResourceCollection<ChannelResource>> GetChannels(Octopus.Client.Model.ProjectResource)
     Task<ReleaseResource> GetReleaseByVersion(Octopus.Client.Model.ProjectResource, String)
     Task<ResourceCollection<ReleaseResource>> GetReleases(Octopus.Client.Model.ProjectResource, Int32)
@@ -3691,7 +3833,9 @@ Octopus.Client.Repositories.Async
     Task<TaskResource> ExecuteCommunityActionTemplatesSynchronisation(String)
     Task<TaskResource> ExecuteHealthCheck(String, Int32, Int32, String, String[])
     Task<TaskResource> ExecuteTentacleUpgrade(String, String, String[])
+    Task<List<TaskResource>> GetAllActive()
     Task<TaskDetailsResource> GetDetails(Octopus.Client.Model.TaskResource)
+    Task<IReadOnlyList<TaskResource>> GetQueuedBehindTasks(Octopus.Client.Model.TaskResource)
     Task<String> GetRawOutputLog(Octopus.Client.Model.TaskResource)
     Task Rerun(Octopus.Client.Model.TaskResource)
     Task WaitForCompletion(Octopus.Client.Model.TaskResource, Int32, Int32, Action<TaskResource[]>)
@@ -3728,8 +3872,11 @@ Octopus.Client.Repositories.Async
     Octopus.Client.Repositories.Async.IGet<UserResource>
     Octopus.Client.Repositories.Async.IModify<UserResource>
     Octopus.Client.Repositories.Async.IDelete<UserResource>
+    Octopus.Client.Repositories.Async.ICreate<UserResource>
   {
+    Task<UserResource> Create(String, String, String, String)
     Task<ApiKeyResource> CreateApiKey(Octopus.Client.Model.UserResource, String)
+    Task<UserResource> CreateServiceAccount(String, String)
     Task<List<ApiKeyResource>> GetApiKeys(Octopus.Client.Model.UserResource)
     Task<UserResource> GetCurrent()
     Task<UserPermissionSetResource> GetPermissions(Octopus.Client.Model.UserResource)
@@ -3745,6 +3892,8 @@ Octopus.Client.Repositories.Async
     Octopus.Client.Repositories.Async.IFindByName<UserRoleResource>
     Octopus.Client.Repositories.Async.IPaginate<UserRoleResource>
     Octopus.Client.Repositories.Async.IGet<UserRoleResource>
+    Octopus.Client.Repositories.Async.ICreate<UserRoleResource>
+    Octopus.Client.Repositories.Async.IModify<UserRoleResource>
   {
   }
   interface IVariableSetRepository

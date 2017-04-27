@@ -1,20 +1,20 @@
 ﻿using System;
-using System.Collections;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text;
-using System.Threading;
 using Newtonsoft.Json;
 using Octopus.Client.Exceptions;
 using Octopus.Client.Model;
 using Octopus.Client.Serialization;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
+using Octopus.Client.Extensions;
 using Octopus.Client.Logging;
 using Octopus.Client.Util;
 
@@ -30,39 +30,56 @@ namespace Octopus.Client
         readonly OctopusServerEndpoint serverEndpoint;
         readonly JsonSerializerSettings defaultJsonSerializerSettings = JsonSerialization.GetDefaultSerializerSettings();
         private readonly HttpClient client;
+        private readonly CookieContainer cookieContainer = new CookieContainer();
+        private readonly Uri cookieOriginUri;
         private readonly bool ignoreSslErrors = false;
+        bool ignoreSslErrorMessageLogged = false;
 
-
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="OctopusAsyncClient" /> class.
-        /// </summary>
-        /// <param name="serverEndpoint">The server endpoint.</param>
-        /// <param name="options">The <see cref="OctopusClientOptions" /> used to configure the behavour of the client, may be null.</param>
-        OctopusAsyncClient(OctopusServerEndpoint serverEndpoint, OctopusClientOptions options)
+        protected OctopusAsyncClient(OctopusServerEndpoint serverEndpoint, OctopusClientOptions options, bool addCertificateCallback)
         {
             options = options ?? new OctopusClientOptions();
             Repository = new OctopusAsyncRepository(this);
 
             this.serverEndpoint = serverEndpoint;
-            var handler = new HttpClientHandler()
+            cookieOriginUri = BuildCookieUri(serverEndpoint);
+            var handler = new HttpClientHandler
             {
+                CookieContainer = cookieContainer,
                 Credentials = serverEndpoint.Credentials ?? CredentialCache.DefaultNetworkCredentials,
             };
 
+            if (options.Proxy != null)
+            {
+                handler.UseProxy = true;
+                handler.Proxy = new ClientProxy(options.Proxy, options.ProxyUsername, options.ProxyPassword);
+            }
+
 #if HTTP_CLIENT_SUPPORTS_SSL_OPTIONS
             handler.SslProtocols = options.SslProtocols;
-            ignoreSslErrors = options.IgnoreSslErrors;
-            handler.ServerCertificateCustomValidationCallback = IgnoreServerCertificateCallback;
+            if(addCertificateCallback)
+            {
+                ignoreSslErrors = options.IgnoreSslErrors;
+                handler.ServerCertificateCustomValidationCallback = IgnoreServerCertificateCallback;
+            }
 #endif
 
             if (serverEndpoint.Proxy != null)
                 handler.Proxy = serverEndpoint.Proxy;
-            
+
             client = new HttpClient(handler, true);
             client.Timeout = options.Timeout;
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             client.DefaultRequestHeaders.Add(ApiConstants.ApiKeyHttpHeaderName, serverEndpoint.ApiKey);
+            client.DefaultRequestHeaders.Add("User-Agent", $"{ApiConstants.OctopusUserAgentProductName}/{GetType().GetSemanticVersion().ToNormalizedString()}");
+        }
+
+        private Uri BuildCookieUri(OctopusServerEndpoint octopusServerEndpoint)
+        {
+            // The CookieContainer is a bit funny - it sets the cookie without the port, but doesn't ignore the port when retreiving cookies
+            // From what I can see it uses the Uri.Authority value - which contains the port number
+            // We need to clear the port in order to successfully get cookies for the same origin
+            var uriBuilder = new UriBuilder(octopusServerEndpoint.OctopusServer.Resolve("/")) {Port = 0};
+            return uriBuilder.Uri;
         }
 
         private bool IgnoreServerCertificateCallback(HttpRequestMessage message, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors)
@@ -78,8 +95,12 @@ Certificate thumbprint:   {certificate.Thumbprint}";
 
             if (ignoreSslErrors)
             {
-                Logger.Warn(warning);
-                Logger.Warn("Because --ignoreSslErrors was set, this will be ignored.");
+                if (!ignoreSslErrorMessageLogged)
+                {
+                    Logger.Warn(warning);
+                    Logger.Warn("Because IgnoreSslErrors was set, this will be ignored.");
+                    ignoreSslErrorMessageLogged = true;
+                }
                 return true;
             }
 
@@ -89,7 +110,25 @@ Certificate thumbprint:   {certificate.Thumbprint}";
 
         public static async Task<IOctopusAsyncClient> Create(OctopusServerEndpoint serverEndpoint, OctopusClientOptions options = null)
         {
-            var client = new OctopusAsyncClient(serverEndpoint, options ?? new OctopusClientOptions());
+#if HTTP_CLIENT_SUPPORTS_SSL_OPTIONS
+            try
+            {
+                return await Create(serverEndpoint, options, true);
+            }
+            catch (PlatformNotSupportedException)
+            {
+                if (options?.IgnoreSslErrors ?? false)
+                    throw new Exception("This platform does not support ignoring SSL certificate errors");
+                return await Create(serverEndpoint, options, false);
+            }
+#else
+            return await Create(serverEndpoint, options, false);
+#endif
+        }
+
+        private static async Task<IOctopusAsyncClient> Create(OctopusServerEndpoint serverEndpoint, OctopusClientOptions options, bool addHandler)
+        {
+            var client = new OctopusAsyncClient(serverEndpoint, options ?? new OctopusClientOptions(), addHandler);
             try
             {
                 client.RootDocument = await client.EstablishSession().ConfigureAwait(false);
@@ -125,6 +164,11 @@ Certificate thumbprint:   {certificate.Thumbprint}";
         /// Occurs when a request is about to be sent.
         /// </summary>
         public event Action<HttpRequestMessage> BeforeSendingHttpRequest;
+
+        /// <summary>
+        /// Occurs when a response has been received.
+        /// </summary>
+        public event Action<HttpResponseMessage> AfterReceivedHttpResponse;
 
         /// <summary>
         /// Occurs when a request is about to be sent.
@@ -169,6 +213,27 @@ Certificate thumbprint:   {certificate.Thumbprint}";
         public async Task<ResourceCollection<TResource>> List<TResource>(string path, object pathParameters = null)
         {
             return await Get<ResourceCollection<TResource>>(path, pathParameters).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Fetches a collection of resources from the server using the HTTP GET verb. All pages will be retrieved.
+        /// property.
+        /// </summary>
+        /// <typeparam name="TResource"></typeparam>
+        /// <param name="path">The path from which to fetch the resources.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
+        /// <returns>
+        /// The collection of resources from the server.
+        /// </returns>
+        public async Task<IReadOnlyList<TResource>> ListAll<TResource>(string path, object pathParameters = null)
+        {
+            var resources = new List<TResource>();
+            await Paginate<TResource>(path, pathParameters, r =>
+            {
+                resources.AddRange(r.Items);
+                return true;
+            });
+            return resources;
         }
 
         /// <summary>
@@ -353,10 +418,11 @@ Certificate thumbprint:   {certificate.Thumbprint}";
         /// <exception cref="OctopusValidationException">HTTP 400: If there was a problem with the request provided by the user.</exception>
         /// <exception cref="OctopusResourceNotFoundException">HTTP 404: If the specified resource does not exist on the server.</exception>
         /// <param name="path">The path to the resource to fetch.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
         /// <returns>A stream containing the content of the resource.</returns>
-        public async Task<Stream> GetContent(string path)
+        public async Task<Stream> GetContent(string path, object pathParameters = null)
         {
-            var uri = QualifyUri(path);
+            var uri = QualifyUri(path, pathParameters);
             var response = await DispatchRequest<Stream>(new OctopusRequest("GET", uri), true).ConfigureAwait(false);
             return response.ResponseResource;
         }
@@ -382,7 +448,7 @@ Certificate thumbprint:   {certificate.Thumbprint}";
             return serverEndpoint.OctopusServer.Resolve(path);
         }
 
-        async Task<RootResource> EstablishSession()
+        protected virtual async Task<RootResource> EstablishSession()
         {
             RootResource server;
 
@@ -441,67 +507,67 @@ Certificate thumbprint:   {certificate.Thumbprint}";
             return server;
         }
 
-        private async Task<OctopusResponse<TResponseResource>> DispatchRequest<TResponseResource>(OctopusRequest request, bool readResponse)
+        protected virtual async Task<OctopusResponse<TResponseResource>> DispatchRequest<TResponseResource>(OctopusRequest request, bool readResponse)
         {
-#if COREFX_ISSUE_11456_EXISTS
-            try
+            using (var message = new HttpRequestMessage())
             {
-#endif
-                using (var message = new HttpRequestMessage())
+                message.RequestUri = request.Uri;
+                message.Method = new HttpMethod(request.Method);
+                
+                if (request.Method == "PUT" || request.Method == "DELETE")
                 {
-                    message.RequestUri = request.Uri;
-                    message.Method = new HttpMethod(request.Method);
+                    message.Method = HttpMethod.Post;
+                    message.Headers.Add("X-HTTP-Method-Override", request.Method);
+                }
 
-                    if (request.Method == "PUT" || request.Method == "DELETE")
+                if (RootDocument != null)
+                {
+                    var expectedCookieName = $"{ApiConstants.AntiforgeryTokenCookiePrefix}_{RootDocument.InstallationId}";
+                    var antiforgeryCookie = cookieContainer.GetCookies(cookieOriginUri)
+                        .Cast<Cookie>()
+                        .SingleOrDefault(c => string.Equals(c.Name, expectedCookieName));
+                    if (antiforgeryCookie != null)
                     {
-                        message.Method = HttpMethod.Post;
-                        message.Headers.Add("X-HTTP-Method-Override", request.Method);
-                    }
-
-                    var requestHandler = SendingOctopusRequest;
-                    requestHandler?.Invoke(request);
-
-                    var webRequestHandler = BeforeSendingHttpRequest;
-                    webRequestHandler?.Invoke(message);
-
-
-                    if (request.RequestResource != null)
-                        message.Content = GetContent(request);
-
-                    var completionOption = readResponse
-                        ? HttpCompletionOption.ResponseContentRead
-                        : HttpCompletionOption.ResponseHeadersRead;
-                    try
-                    {
-                        using (var response = await client.SendAsync(message, completionOption).ConfigureAwait(false))
-                        {
-                            if (!response.IsSuccessStatusCode)
-                                throw await OctopusExceptionFactory.CreateException(response).ConfigureAwait(false);
-
-                            var resource = readResponse
-                                ? await ReadResponse<TResponseResource>(response).ConfigureAwait(false)
-                                : default(TResponseResource);
-
-                            var locationHeader = response.Headers.Location?.ToString();
-                            var octopusResponse = new OctopusResponse<TResponseResource>(request, response.StatusCode,
-                                locationHeader, resource);
-                            ReceivedOctopusResponse?.Invoke(octopusResponse);
-
-                            return octopusResponse;
-                        }
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        throw new TimeoutException($"Timeout getting response, client timeout is set to {client.Timeout}.");
+                        message.Headers.Add(ApiConstants.AntiforgeryTokenHttpHeaderName, antiforgeryCookie.Value);
                     }
                 }
-#if COREFX_ISSUE_11456_EXISTS
+
+                SendingOctopusRequest?.Invoke(request);
+
+                BeforeSendingHttpRequest?.Invoke(message);
+
+                if (request.RequestResource != null)
+                    message.Content = GetContent(request);
+
+                var completionOption = readResponse
+                    ? HttpCompletionOption.ResponseContentRead
+                    : HttpCompletionOption.ResponseHeadersRead;
+                try
+                {
+                    using (var response = await client.SendAsync(message, completionOption).ConfigureAwait(false))
+                    {
+                        AfterReceivedHttpResponse?.Invoke(response);
+
+                        if (!response.IsSuccessStatusCode)
+                            throw await OctopusExceptionFactory.CreateException(response).ConfigureAwait(false);
+
+                        var resource = readResponse
+                            ? await ReadResponse<TResponseResource>(response).ConfigureAwait(false)
+                            : default(TResponseResource);
+
+                        var locationHeader = response.Headers.Location?.ToString();
+                        var octopusResponse = new OctopusResponse<TResponseResource>(request, response.StatusCode,
+                            locationHeader, resource);
+                        ReceivedOctopusResponse?.Invoke(octopusResponse);
+
+                        return octopusResponse;
+                    }
+                }
+                catch (TaskCanceledException)
+                {
+                    throw new TimeoutException($"Timeout getting response, client timeout is set to {client.Timeout}.");
+                }
             }
-            catch (HttpRequestException hre) when (hre.InnerException?.Message == "The operation identifier is not valid")
-            {
-                throw new OctopusSecurityException(401, "You must be logged in to perform this action. Please provide a valid API key or log in again.");
-            }
-#endif
         }
 
         private HttpContent GetContent(OctopusRequest request)

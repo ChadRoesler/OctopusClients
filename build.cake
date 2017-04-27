@@ -41,7 +41,8 @@ var gitVersionInfo = GitVersion(new GitVersionSettings {
 });
 
 var nugetVersion = gitVersionInfo.NuGetVersion;
-var runtimes = new[] { 
+var runtimes = new[] {
+    "win7-x86", 
     "osx.10.10-x64",
     "ubuntu.14.04-x64",
     "ubuntu.16.04-x64",
@@ -57,6 +58,11 @@ var runtimes = new[] {
 ///////////////////////////////////////////////////////////////////////////////
 Setup(context =>
 {
+    if(BuildSystem.IsRunningOnTeamCity)
+        BuildSystem.TeamCity.SetBuildNumber(gitVersionInfo.NuGetVersion);
+    if(BuildSystem.IsRunningOnAppVeyor)
+        AppVeyor.UpdateBuildVersion(gitVersionInfo.NuGetVersion);
+
     Information("Building OctopusClients v{0}", nugetVersion);
 });
 
@@ -76,7 +82,6 @@ Teardown(context =>
 Task("__Default")
     .IsDependentOn("__Clean")
     .IsDependentOn("__Restore")
-    .IsDependentOn("__UpdateAssemblyVersionInformation")
     .IsDependentOn("__Build")
     .IsDependentOn("__Test")
     .IsDependentOn("__UpdateProjectJsonVersion")
@@ -97,27 +102,8 @@ Task("__Clean")
 Task("__Restore")
     .Does(() => DotNetCoreRestore());
 
-Task("__UpdateAssemblyVersionInformation")
-    .WithCriteria(isContinuousIntegrationBuild)
-    .Does(() =>
-{
-     GitVersion(new GitVersionSettings {
-        UpdateAssemblyInfo = true,
-        UpdateAssemblyInfoFilePath = globalAssemblyFile
-    });
-
-    Information("AssemblyVersion -> {0}", gitVersionInfo.AssemblySemVer);
-    Information("AssemblyFileVersion -> {0}", $"{gitVersionInfo.MajorMinorPatch}.0");
-    Information("AssemblyInformationalVersion -> {0}", gitVersionInfo.InformationalVersion);
-    if(BuildSystem.IsRunningOnTeamCity)
-        BuildSystem.TeamCity.SetBuildNumber(gitVersionInfo.NuGetVersion);
-    if(BuildSystem.IsRunningOnAppVeyor)
-        AppVeyor.UpdateBuildVersion(gitVersionInfo.NuGetVersion);
-});
-
 Task("__Build")
     .IsDependentOn("__UpdateProjectJsonVersion")
-    .IsDependentOn("__UpdateAssemblyVersionInformation")
     .Does(() =>
 {
     DotNetCoreBuild("**/project.json", new DotNetCoreBuildSettings
@@ -250,6 +236,8 @@ Task("__MergeOctoExe")
         );
     });
 
+
+
 Task("__Zip")
     .IsDependentOn("__MergeOctoExe")
     .IsDependentOn("__Publish")
@@ -270,25 +258,42 @@ Task("__Zip")
             else
             {
                 var outFile = $"{artifactsDir}/OctopusTools.{nugetVersion}.{dirName}";
-                if(dirName == "portable")
+                if(dirName == "portable" || dirName.Contains("win"))
                     Zip(dir, outFile + ".zip");
             
-                TarGzip(dir, outFile);
+                if(!dirName.Contains("win"))
+                    TarGzip(dir, outFile);
             }
         }
     });
 
 Task("__PackNuget")
+    .IsDependentOn("__PackClientNuget")
     .IsDependentOn("__MergeOctoExe")
     .IsDependentOn("__Publish")
-    .IsDependentOn("__PackOctopusToolsNuget")
-    .IsDependentOn("__PackClientNuget");
+    .IsDependentOn("__PackOctopusToolsNuget");
 
 Task("__PackClientNuget")
     .Does(() => {
+        var inputFolder = $"{octopusClientFolder}/bin/{configuration}/net45";
+        var outputFolder = $"{octopusClientFolder}/bin/{configuration}/net45Merged";
+        CreateDirectory(outputFolder);
+        ILRepack(
+            $"{outputFolder}/Octopus.Client.dll",
+            $"{inputFolder}/Octopus.Client.dll",
+            IO.Directory.EnumerateFiles(inputFolder, "*.dll").Select(f => (FilePath) f),
+            new ILRepackSettings { 
+                Internalize = true, 
+                Libs = new List<FilePath>() { inputFolder }
+            }
+        );
+        DeleteDirectory(inputFolder, true);
+        MoveDirectory(outputFolder, inputFolder);
+
         DotNetCorePack(octopusClientFolder, new DotNetCorePackSettings {
             Configuration = configuration,
-            OutputDirectory = artifactsDir
+            OutputDirectory = artifactsDir,
+            NoBuild = true
         });
     });
 

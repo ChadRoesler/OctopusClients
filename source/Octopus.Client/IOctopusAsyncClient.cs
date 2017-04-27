@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -47,6 +48,11 @@ namespace Octopus.Client
         event Action<HttpRequestMessage> BeforeSendingHttpRequest;
 
         /// <summary>
+        /// Occurs when a response has been received.
+        /// </summary>
+        event Action<HttpResponseMessage> AfterReceivedHttpResponse;
+
+        /// <summary>
         /// A simplified interface to commonly-used parts of the API.
         /// </summary>
         IOctopusAsyncRepository Repository { get; }
@@ -70,6 +76,24 @@ namespace Octopus.Client
         /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
         /// <returns>The collection of resources from the server.</returns>
         Task<ResourceCollection<TResource>> List<TResource>(string path, object pathParameters = null);
+
+        /// <summary>
+        /// Fetches a collection of resources from the server using the HTTP GET verb. All result pages will be retrieved.
+        /// </summary>
+        /// <exception cref="OctopusSecurityException">
+        /// HTTP 401 or 403: Thrown when the current user's API key was not valid, their
+        /// account is disabled, or they don't have permission to perform the specified action.
+        /// </exception>
+        /// <exception cref="OctopusServerException">
+        /// If any other error is successfully returned from the server (e.g., a 500
+        /// server error).
+        /// </exception>
+        /// <exception cref="OctopusValidationException">HTTP 400: If there was a problem with the request provided by the user.</exception>
+        /// <exception cref="OctopusResourceNotFoundException">HTTP 404: If the specified resource does not exist on the server.</exception>
+        /// <param name="path">The path from which to fetch the resources.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
+        /// <returns>The collection of resources from the server.</returns>
+        Task<IReadOnlyList<TResource>> ListAll<TResource>(string path, object pathParameters = null);
 
         /// <summary>
         /// Fetches a collection of resources from the server one page at a time using the HTTP GET verb.
@@ -292,8 +316,9 @@ namespace Octopus.Client
         /// <exception cref="OctopusValidationException">HTTP 400: If there was a problem with the request provided by the user.</exception>
         /// <exception cref="OctopusResourceNotFoundException">HTTP 404: If the specified resource does not exist on the server.</exception>
         /// <param name="path">The path to the resource to fetch.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
         /// <returns>A stream containing the content of the resource.</returns>
-        Task<Stream> GetContent(string path);
+        Task<Stream> GetContent(string path, object pathParameters = null);
 
         /// <summary>
         /// Creates or updates the raw content of the resource at the specified path, using the PUT verb.

@@ -9,7 +9,6 @@ namespace Octopus.Client
     /// Functionality not exposed by this interface can be accessed
     /// using <see cref="IOctopusRepository.Client" />.
     /// </summary>
-    // [Obsolete("Use IOctopusAsyncRepository instead")]
     public interface IOctopusRepository
     {
         /// <summary>
@@ -23,6 +22,7 @@ namespace Octopus.Client
         IBackupRepository Backups { get; }
         IBuiltInPackageRepositoryRepository BuiltInPackageRepository { get; }
         ICertificateRepository Certificates { get; }
+        ICertificateConfigurationRepository CertificateConfiguration { get; }
         IChannelRepository Channels { get; }
         ICommunityActionTemplateRepository CommunityActionTemplates {get; }
         IDashboardConfigurationRepository DashboardConfigurations { get; }

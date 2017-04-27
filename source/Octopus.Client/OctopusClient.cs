@@ -11,20 +11,23 @@ using Octopus.Client.Exceptions;
 using Octopus.Client.Model;
 using Octopus.Client.Serialization;
 using System.Collections.Generic;
+using System.Linq;
+using Octopus.Client.Extensions;
 
 namespace Octopus.Client
 {
     /// <summary>
     /// The Octopus Deploy RESTful HTTP API client.
     /// </summary>
-    // [Obsolete("Use OctopusAsyncClient instead")]
     public class OctopusClient : IHttpOctopusClient
     {
         readonly object rootDocumentLock = new object();
         RootResource rootDocument;
         readonly OctopusServerEndpoint serverEndpoint;
-        readonly CookieContainer cookies = new CookieContainer();
+        readonly CookieContainer cookieContainer = new CookieContainer();
+        readonly Uri cookieOriginUri;
         readonly JsonSerializerSettings defaultJsonSerializerSettings = JsonSerialization.GetDefaultSerializerSettings();
+        private readonly SemanticVersion clientVersion;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="OctopusClient" /> class.
@@ -33,6 +36,8 @@ namespace Octopus.Client
         public OctopusClient(OctopusServerEndpoint serverEndpoint)
         {
             this.serverEndpoint = serverEndpoint;
+            cookieOriginUri = BuildCookieUri(serverEndpoint);
+            clientVersion = GetType().GetSemanticVersion();
         }
 
         /// <summary>
@@ -80,6 +85,11 @@ namespace Octopus.Client
         public event Action<WebRequest> BeforeSendingHttpRequest;
 
         /// <summary>
+        /// Occurs when a response has been received.
+        /// </summary>
+        public event Action<WebResponse> AfterReceivingHttpResponse;
+
+        /// <summary>
         /// Occurs when a request is about to be sent.
         /// </summary>
         public event Action<OctopusRequest> SendingOctopusRequest;
@@ -96,6 +106,15 @@ namespace Octopus.Client
         {
             // Force the Lazy instance to be loaded
             RootDocument.Link("Self");
+        }
+
+        private Uri BuildCookieUri(OctopusServerEndpoint octopusServerEndpoint)
+        {
+            // The CookieContainer is a bit funny - it sets the cookie without the port, but doesn't ignore the port when retreiving cookies
+            // From what I can see it uses the Uri.Authority value - which contains the port number
+            // We need to clear the port in order to successfully get cookies for the same origin
+            var uriBuilder = new UriBuilder(octopusServerEndpoint.OctopusServer.Resolve("/")) { Port = 0 };
+            return uriBuilder.Uri;
         }
 
         /// <summary>
@@ -128,6 +147,27 @@ namespace Octopus.Client
         public ResourceCollection<TResource> List<TResource>(string path, object pathParameters = null)
         {
             return Get<ResourceCollection<TResource>>(path, pathParameters);
+        }
+
+        /// <summary>
+        /// Fetches a collection of resources from the server using the HTTP GET verb. All pages will be retrieved.
+        /// property.
+        /// </summary>
+        /// <typeparam name="TResource"></typeparam>
+        /// <param name="path">The path from which to fetch the resources.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
+        /// <returns>
+        /// The collection of resources from the server.
+        /// </returns>
+        public IReadOnlyList<TResource> ListAll<TResource>(string path, object pathParameters = null)
+        {
+            var resources = new List<TResource>();
+            Paginate<TResource>(path, pathParameters, r =>
+            {
+                resources.AddRange(r.Items);
+                return true;
+            });
+            return resources;
         }
 
         /// <summary>
@@ -311,10 +351,11 @@ namespace Octopus.Client
         /// <exception cref="OctopusValidationException">HTTP 400: If there was a problem with the request provided by the user.</exception>
         /// <exception cref="OctopusResourceNotFoundException">HTTP 404: If the specified resource does not exist on the server.</exception>
         /// <param name="path">The path to the resource to fetch.</param>
+        /// <param name="pathParameters">If the <c>path</c> is a URI template, parameters to use for substitution.</param>
         /// <returns>A stream containing the content of the resource.</returns>
-        public Stream GetContent(string path)
+        public Stream GetContent(string path, object pathParameters = null)
         {
-            var uri = QualifyUri(path);
+            var uri = QualifyUri(path, pathParameters);
             return DispatchRequest<Stream>(new OctopusRequest("GET", uri), true).ResponseResource;
         }
 
@@ -339,7 +380,7 @@ namespace Octopus.Client
             return serverEndpoint.OctopusServer.Resolve(path);
         }
 
-        RootResource EstablishSession()
+        protected virtual RootResource EstablishSession()
         {
             RootResource server;
 
@@ -398,14 +439,14 @@ namespace Octopus.Client
             return server;
         }
 
-        OctopusResponse<TResponseResource> DispatchRequest<TResponseResource>(OctopusRequest request, bool readResponse)
+        protected virtual OctopusResponse<TResponseResource> DispatchRequest<TResponseResource>(OctopusRequest request, bool readResponse)
         {
             var webRequest = (HttpWebRequest)WebRequest.Create(request.Uri);
             if (serverEndpoint.Proxy != null)
             {
                 webRequest.Proxy = serverEndpoint.Proxy;
             }
-            webRequest.CookieContainer = cookies;
+            webRequest.CookieContainer = cookieContainer;
             webRequest.Accept = "application/json";
             webRequest.ContentType = "application/json";
             webRequest.ReadWriteTimeout = ApiConstants.DefaultClientRequestTimeout;
@@ -413,6 +454,7 @@ namespace Octopus.Client
             webRequest.Credentials = serverEndpoint.Credentials ?? CredentialCache.DefaultNetworkCredentials;
             webRequest.Method = request.Method;
             webRequest.Headers[ApiConstants.ApiKeyHttpHeaderName] = serverEndpoint.ApiKey;
+            webRequest.UserAgent = $"{ApiConstants.OctopusUserAgentProductName}/{clientVersion.ToNormalizedString()}";
             
             if (webRequest.Method == "PUT")
             {
@@ -426,13 +468,24 @@ namespace Octopus.Client
                 webRequest.Method = "POST";
             }
 
-            var requestHandler = SendingOctopusRequest;
-            requestHandler?.Invoke(request);
+            if (rootDocument != null)
+            {
+                var expectedCookieName = $"{ApiConstants.AntiforgeryTokenCookiePrefix}_{rootDocument.InstallationId}";
+                var antiforgeryCookie = cookieContainer.GetCookies(cookieOriginUri)
+                    .Cast<Cookie>()
+                    .SingleOrDefault(c => string.Equals(c.Name, expectedCookieName));
+                if (antiforgeryCookie != null)
+                {
+                    webRequest.Headers[ApiConstants.AntiforgeryTokenHttpHeaderName] = antiforgeryCookie.Value;
+                }
+            }
 
-            var webRequestHandler = BeforeSendingHttpRequest;
-            webRequestHandler?.Invoke(webRequest);
+            SendingOctopusRequest?.Invoke(request);
+
+            BeforeSendingHttpRequest?.Invoke(webRequest);
 
             HttpWebResponse webResponse = null;
+
             try
             {
                 if (request.RequestResource == null) {
@@ -483,6 +536,7 @@ namespace Octopus.Client
                 }
 
                 webResponse = (HttpWebResponse)webRequest.GetResponse();
+                AfterReceivingHttpResponse?.Invoke(webResponse);
 
                 var resource = default(TResponseResource);
                 if (readResponse)
@@ -530,8 +584,7 @@ namespace Octopus.Client
 
                 var locationHeader = webResponse.Headers.Get("Location");
                 var octopusResponse = new OctopusResponse<TResponseResource>(request, webResponse.StatusCode, locationHeader, resource);
-                var responseHandler = ReceivedOctopusResponse;
-                if (responseHandler != null) responseHandler(octopusResponse);
+                ReceivedOctopusResponse?.Invoke(octopusResponse);
 
                 return octopusResponse;
             }

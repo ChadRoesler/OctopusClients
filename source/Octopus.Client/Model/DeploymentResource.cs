@@ -40,6 +40,12 @@ namespace Octopus.Client.Model
         [WriteableOnCreate]
         public ReferenceCollection SpecificMachineIds { get; set; }
 
+        /// <summary>
+        /// A collection of machines in the target environment that should be excluded from the deployment.
+        /// </summary>
+        [WriteableOnCreate]
+        public ReferenceCollection ExcludedMachineIds { get; set; }
+
         public string DeploymentProcessId { get; set; }
         public string ManifestVariableSetId { get; set; }
         public string TaskId { get; set; }
@@ -67,7 +73,10 @@ namespace Octopus.Client.Model
         /// </summary>
         public DateTimeOffset? QueueTime { get; set; }
 
+        public DateTimeOffset? QueueTimeExpiry { get; set; }
+
         public string Name { get; set; }
         public DateTimeOffset Created { get; set; }
+        public bool IsFirst { get; set; }
     }
 }
